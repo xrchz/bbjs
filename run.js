@@ -21,6 +21,7 @@ program
   .option('-f, --fee-mult <n>', 'base fee multiplier', '2')
   .option('-g, --gas-mult <n>', 'gas limit multiplier', '2')
   .option('-p, --priority-fee <gwei>', 'max priority fee per gas', '10')
+  .option('-i, --interval <millis>', 'polling interval', '500')
   .requiredOption('-k, --signer <key>', 'private key of account to send transactions from')
 program.parse()
 const options = program.opts()
@@ -28,13 +29,16 @@ const options = program.opts()
 const fetchRequest = new ethers.FetchRequest(options.rpc)
 options.header.forEach((v, k) => fetchRequest.setHeader(k, v))
 const provider = new ethers.JsonRpcProvider(fetchRequest)
+const pollingInterval = parseInt(options.interval)
+provider.pollingInterval = pollingInterval
 console.log('Awaiting network...')
 const network = await provider.getNetwork()
 console.log(`Got ${network.name}`)
 const signer = new ethers.Wallet(options.signer, provider)
 console.log(`Signer: ${await signer.getAddress()}`)
 console.log(`Balance: ${ethers.formatEther(await provider.getBalance(signer))} ether`)
-console.log(`Nonce: ${await provider.getTransactionCount(signer)}`)
+let nonce = await signer.getNonce()
+console.log(`Nonce: ${nonce}`)
 
 let slotsLeft = parseInt(options.slots)
 const total = parseInt(options.txns) * slotsLeft
@@ -62,32 +66,39 @@ const nonces = new Map()
 const submitted = []
 let landed = 0
 
+const startBlock = await provider.getBlockNumber()
+const block = await provider.getBlock(startBlock)
+console.log(`Block: ${startBlock}`)
+
 let checkWaiting
 let slotWaiting
 let slot
+let lastSeenBlockNumber = 0
+let fastFee = block.baseFeePerGas * feeMult
+let gasLimit
 
 async function processSubmitted() {
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
     console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
     landed += 1
+    if (receipt.blockNumber > lastSeenBlockNumber) {
+      lastSeenBlockNumber = receipt.blockNumber
+      const block = await provider.getBlock(receipt.blockNumber)
+      const baseFee = block.baseFeePerGas
+      fastFee = baseFee * feeMult
+    }
   }
   checkWaiting = false
 }
 
 async function processSlot() {
   if (!slotsLeft) return
-  const blockNumber = await provider.getBlockNumber()
-  console.log(`At slot ${slot} (block: ${blockNumber})`)
-  const block = await provider.getBlock(blockNumber)
-  const baseFee = block.baseFeePerGas
-  const fastFee = baseFee * feeMult
-  console.log(`Base fee: ${ethers.formatUnits(baseFee, 'gwei')} gwei; Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
-  const startingNonce = await signer.getNonce()
+  console.log(`Processing slot ${slot}`)
+  console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
-  let gasLimit = null
   for (const i of Array(toSubmit).keys()) {
-    const tx = makeTxn(fastFee, startingNonce + i)
+    const tx = makeTxn(fastFee, nonce)
     if (!gasLimit) {
       tx.gasLimit = block.gasLimit
       gasLimit = gasMult * await signer.estimateGas(tx)
@@ -98,6 +109,7 @@ async function processSlot() {
     const response = await provider.broadcastTransaction(signedTx)
     console.log(`Submitted ${response.nonce} as ${shortHash(response.hash)}`)
     nonces.set(response.hash, response.nonce)
+    nonce = response.nonce + 1
     submitted.push(response.wait())
   }
   slotsLeft -= 1
@@ -128,7 +140,7 @@ setTimeout(onSecondBoundary, Date.now() % 1000)
 while (submitted.length || slotsLeft) {
   if (slotWaiting) await processSlot()
   else if (checkWaiting) await processSubmitted()
-  else await new Promise(resolve => setTimeout(resolve, 500))
+  else await new Promise(resolve => setTimeout(resolve, pollingInterval))
 }
 
 clearInterval(intervalId)
