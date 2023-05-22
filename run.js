@@ -62,15 +62,18 @@ const nonces = new Map()
 const submitted = []
 let landed = 0
 
+let checkWaiting
+let slotWaiting
+let slot
+
 async function processSubmitted() {
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
     console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
     landed += 1
   }
+  checkWaiting = false
 }
-
-let slot
 
 async function processSlot() {
   if (!slotsLeft) return
@@ -98,23 +101,20 @@ async function processSlot() {
     submitted.push(response.wait())
   }
   slotsLeft -= 1
+  slotWaiting = false
 }
-
-let promiseQueue = Promise.resolve()
-
-let intervalId
 
 function everySecond() {
   const mod = Math.trunc(Date.now() / 1000) % 12
-  promiseQueue = promiseQueue.then(processSubmitted)
+  checkWaiting = true
   if (mod === 11) slot += 1
   if ((mod + 1) % 12 === delay)
-    promiseQueue = promiseQueue.then(processSlot)
+    slotWaiting = true
 }
 
-const elapsed = () => Math.trunc(Date.now() / 1000)
-
 const GENESIS = 1606824023
+
+let intervalId
 
 const onSecondBoundary = () => {
   const now = Math.trunc(Date.now() / 1000)
@@ -126,8 +126,9 @@ const onSecondBoundary = () => {
 setTimeout(onSecondBoundary, Date.now() % 1000)
 
 while (submitted.length || slotsLeft) {
-  await promiseQueue
-  await new Promise(resolve => setTimeout(resolve, 500))
+  if (slotWaiting) await processSlot()
+  else if (checkWaiting) await processSubmitted()
+  else await new Promise(resolve => setTimeout(resolve, 500))
 }
 
 clearInterval(intervalId)
