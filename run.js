@@ -13,15 +13,15 @@ program
   .option('--header <k>:<v>', 'add a header to fetch requests, may be repeated', addHeader, new Map())
   .option('-z, --size <kB>', 'calldata kilobytes to include per transaction', '64')
   .option('--trim-bytes <b>', 'trim a few bytes from the size', '256')
-  .option('-b, --blocks <n>', 'number of blocks to run for', '10')
-  .option('-t, --txns <n>', 'average number of transactions to aim to submit per block', '2')
-  .option('-m, --max-txns <n>', 'maximum transactions to submit per block', '8')
+  .option('-s, --slots <n>', 'number of slots to run for', '10')
+  .option('-d, --delay <secs>', 'number of seconds after slot boundary to submit transactions', '3')
+  .option('-t, --txns <n>', 'average number of transactions to aim to submit per slot', '2')
+  .option('-m, --max-txns <n>', 'maximum transactions to submit per slot', '8')
   .option('-c, --contract <addr>', 'transaction recipient', '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
   .option('-f, --fee-mult <n>', 'base fee multiplier', '2')
   .option('-g, --gas-mult <n>', 'gas limit multiplier', '2')
   .option('-p, --priority-fee <gwei>', 'max priority fee per gas', '10')
-  .option('-i, --interval <millis>', 'delay milliseconds for polling', '1000')
-  .requiredOption('-s, --signer <key>', 'private key of account to send transactions from')
+  .requiredOption('-k, --signer <key>', 'private key of account to send transactions from')
 program.parse()
 const options = program.opts()
 
@@ -36,11 +36,9 @@ console.log(`Signer: ${await signer.getAddress()}`)
 console.log(`Balance: ${ethers.formatEther(await provider.getBalance(signer))} ether`)
 console.log(`Nonce: ${await provider.getTransactionCount(signer)}`)
 
-const interval = parseInt(options.interval)
-provider.pollingInterval = interval
-
-let blocksLeft = parseInt(options.blocks)
-let txnsLeft = parseInt(options.txns) * blocksLeft
+let slotsLeft = parseInt(options.slots)
+let txnsLeft = parseInt(options.txns) * slotsLeft
+const delay = parseInt(options.delay)
 const maxTxns = parseInt(options.maxTxns)
 const sizeBytes = parseInt(options.size) * 1024 - parseInt(options.trimBytes)
 const feeMult = BigInt(options.feeMult)
@@ -63,22 +61,25 @@ const nonces = new Map()
 
 const submitted = []
 
-let blockQueue = Promise.resolve()
-
-async function processBlock(blockNumber) {
-  console.log(`Got block ${blockNumber}`)
+async function processSubmitted() {
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
     console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
   }
-  if (!blocksLeft) return
+}
+
+let slot
+
+async function processSlot() {
+  const blockNumber = await provider.getBlockNumber()
+  console.log(`At slot ${slot} (block: ${blockNumber})`)
+  if (!slotsLeft) return
   const block = await provider.getBlock(blockNumber)
   const baseFee = block.baseFeePerGas
-  console.log(`Base fee: ${ethers.formatUnits(baseFee, 'gwei')} gwei`)
   const fastFee = baseFee * feeMult
-  console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
+  console.log(`Base fee: ${ethers.formatUnits(baseFee, 'gwei')} gwei; Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const startingNonce = await signer.getNonce()
-  const toSubmit = Math.min(maxTxns, Math.trunc(txnsLeft / blocksLeft))
+  const toSubmit = Math.min(maxTxns, Math.trunc(txnsLeft / slotsLeft))
   let gasLimit = null
   for (const i of Array(toSubmit).keys()) {
     const tx = makeTxn(fastFee, startingNonce + i)
@@ -95,18 +96,37 @@ async function processBlock(blockNumber) {
     submitted.push(response.wait())
     txnsLeft -= 1
   }
-  blocksLeft -= 1
+  slotsLeft -= 1
 }
 
-function addBlock(blockNumber) {
-  blockQueue = blockQueue.then(() => processBlock(blockNumber))
+let promiseQueue = Promise.resolve()
+
+let intervalId
+
+function everySecond() {
+  const mod = Math.trunc(Date.now() / 1000) % 12
+  promiseQueue = promiseQueue.then(processSubmitted)
+  if (mod === 11) slot += 1
+  if (mod + 1 === delay || !delay && mod === 11)
+    promiseQueue = promiseQueue.then(processSlot)
 }
 
-provider.on('block', addBlock)
+const elapsed = () => Math.trunc(Date.now() / 1000)
 
-while (submitted.length || blocksLeft) {
-  await blockQueue
-  await new Promise(resolve => setTimeout(resolve, interval));
+const GENESIS = 1606824023
+
+const onSecondBoundary = () => {
+  const now = Math.trunc(Date.now() / 1000)
+  const mod = now % 12
+  slot = (now - mod - 1 - GENESIS) / 12
+  intervalId = setInterval(everySecond, 1000)
 }
 
-provider.off('block')
+setTimeout(onSecondBoundary, Date.now() % 1000)
+
+while (submitted.length || slotsLeft) {
+  await promiseQueue
+  await new Promise(resolve => setTimeout(resolve, 500))
+}
+
+clearInterval(intervalId)
