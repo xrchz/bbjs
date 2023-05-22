@@ -71,9 +71,9 @@ async function processSubmitted() {
 let slot
 
 async function processSlot() {
+  if (!slotsLeft) return
   const blockNumber = await provider.getBlockNumber()
   console.log(`At slot ${slot} (block: ${blockNumber})`)
-  if (!slotsLeft) return
   const block = await provider.getBlock(blockNumber)
   const baseFee = block.baseFeePerGas
   const fastFee = baseFee * feeMult
@@ -107,7 +107,7 @@ function everySecond() {
   const mod = Math.trunc(Date.now() / 1000) % 12
   promiseQueue = promiseQueue.then(processSubmitted)
   if (mod === 11) slot += 1
-  if (mod + 1 === delay || !delay && mod === 11)
+  if ((mod + 1) % 12 === delay)
     promiseQueue = promiseQueue.then(processSlot)
 }
 
