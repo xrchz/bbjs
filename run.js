@@ -34,7 +34,7 @@ const signer = new ethers.Wallet(options.signer, provider)
 console.log(`Using signer ${await signer.getAddress()}`)
 
 let blocksLeft = parseInt(options.blocks)
-let txnsLeft = parseInt(options.txns)
+let txnsLeft = parseInt(options.txns) * blocksLeft
 const maxTxns = parseInt(options.maxTxns)
 const sizeBytes = parseInt(options.size) * 1024 - parseInt(options.trimBytes)
 const feeMult = BigInt(options.feeMult)
