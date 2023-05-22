@@ -20,6 +20,7 @@ program
   .option('-f, --fee-mult <n>', 'base fee multiplier', '2')
   .option('-g, --gas-mult <n>', 'gas limit multiplier', '2')
   .option('-p, --priority-fee <gwei>', 'max priority fee per gas', '10')
+  .option('-i, --interval <millis>', 'delay milliseconds for polling', '1000')
   .requiredOption('-s, --signer <key>', 'private key of account to send transactions from')
 program.parse()
 const options = program.opts()
@@ -31,7 +32,12 @@ console.log('Awaiting network...')
 const network = await provider.getNetwork()
 console.log(`Got ${network.name}`)
 const signer = new ethers.Wallet(options.signer, provider)
-console.log(`Using signer ${await signer.getAddress()}`)
+console.log(`Signer: ${await signer.getAddress()}`)
+console.log(`Balance: ${ethers.formatEther(await provider.getBalance(signer))} ether`)
+console.log(`Nonce: ${await provider.getTransactionCount(signer)}`)
+
+const interval = parseInt(options.interval)
+provider.pollingInterval = interval
 
 let blocksLeft = parseInt(options.blocks)
 let txnsLeft = parseInt(options.txns) * blocksLeft
@@ -56,16 +62,16 @@ const shortHash = (hash) => `${hash.substring(0, 4)}..${hash.substring(hash.leng
 const nonces = new Map()
 
 const submitted = []
-provider.on('block', async (blockNumber) => {
+
+let blockQueue = Promise.resolve()
+
+async function processBlock(blockNumber) {
+  console.log(`Got block ${blockNumber}`)
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
     console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
   }
-  if (!txnsLeft || !blocksLeft) {
-    if (submitted.length) return
-    else process.exit(0)
-  }
-  console.log(`Got block ${blockNumber}`)
+  if (!blocksLeft) return
   const block = await provider.getBlock(blockNumber)
   const baseFee = block.baseFeePerGas
   console.log(`Base fee: ${ethers.formatUnits(baseFee, 'gwei')} gwei`)
@@ -90,4 +96,17 @@ provider.on('block', async (blockNumber) => {
     txnsLeft -= 1
   }
   blocksLeft -= 1
-})
+}
+
+function addBlock(blockNumber) {
+  blockQueue = blockQueue.then(() => processBlock(blockNumber))
+}
+
+provider.on('block', addBlock)
+
+while (submitted.length || blocksLeft) {
+  await blockQueue
+  await new Promise(resolve => setTimeout(resolve, interval));
+}
+
+provider.off('block')
