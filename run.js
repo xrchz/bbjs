@@ -37,7 +37,7 @@ console.log(`Balance: ${ethers.formatEther(await provider.getBalance(signer))} e
 console.log(`Nonce: ${await provider.getTransactionCount(signer)}`)
 
 let slotsLeft = parseInt(options.slots)
-let txnsLeft = parseInt(options.txns) * slotsLeft
+const total = parseInt(options.txns) * slotsLeft
 const delay = parseInt(options.delay)
 const maxTxns = parseInt(options.maxTxns)
 const sizeBytes = parseInt(options.size) * 1024 - parseInt(options.trimBytes)
@@ -60,11 +60,13 @@ const shortHash = (hash) => `${hash.substring(0, 4)}..${hash.substring(hash.leng
 const nonces = new Map()
 
 const submitted = []
+let landed = 0
 
 async function processSubmitted() {
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
     console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
+    landed += 1
   }
 }
 
@@ -79,7 +81,7 @@ async function processSlot() {
   const fastFee = baseFee * feeMult
   console.log(`Base fee: ${ethers.formatUnits(baseFee, 'gwei')} gwei; Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const startingNonce = await signer.getNonce()
-  const toSubmit = Math.min(maxTxns, Math.trunc(txnsLeft / slotsLeft))
+  const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
   let gasLimit = null
   for (const i of Array(toSubmit).keys()) {
     const tx = makeTxn(fastFee, startingNonce + i)
@@ -94,7 +96,6 @@ async function processSlot() {
     console.log(`Submitted ${response.nonce} as ${shortHash(response.hash)}`)
     nonces.set(response.hash, response.nonce)
     submitted.push(response.wait())
-    txnsLeft -= 1
   }
   slotsLeft -= 1
 }
