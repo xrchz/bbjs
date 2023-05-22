@@ -2,22 +2,31 @@ import { ethers } from 'ethers'
 import { program } from 'commander'
 import { randomBytes } from 'node:crypto'
 
+function addHeader(opt, headers) {
+  const a = opt.split(':', 2)
+  headers.set(a[0], a[1])
+  return headers
+}
+
 program
   .option('-r, --rpc <url>', 'RPC endpoint URL', 'http://localhost:8545')
+  .option('--header <k>:<v>', 'add a header to fetch requests, may be repeated', addHeader, new Map())
   .option('-z, --size <kB>', 'calldata kilobytes to include per transaction', '64')
   .option('--trim-bytes <b>', 'trim a few bytes from the size', '256')
   .option('-b, --blocks <n>', 'number of blocks to run for', '10')
   .option('-t, --txns <n>', 'average number of transactions to aim to submit per block', '2')
+  .option('-m, --max-txns <n>', 'maximum transactions to submit per block', '8')
   .option('-c, --contract <addr>', 'transaction recipient', '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
   .option('-f, --fee-mult <n>', 'base fee multiplier', '2')
   .option('-g, --gas-mult <n>', 'gas limit multiplier', '2')
   .option('-p, --priority-fee <gwei>', 'max priority fee per gas', '10')
-  .option('-m, --max-txns <n>', 'maximum transactions to submit per block', '8')
   .requiredOption('-s, --signer <key>', 'private key of account to send transactions from')
 program.parse()
 const options = program.opts()
 
-const provider = new ethers.JsonRpcProvider(options.rpc)
+const fetchRequest = new ethers.FetchRequest(options.rpc)
+options.header.forEach((v, k) => fetchRequest.setHeader(k, v))
+const provider = new ethers.JsonRpcProvider(fetchRequest)
 console.log('Awaiting network...')
 const network = await provider.getNetwork()
 console.log(`Got ${network.name}`)
