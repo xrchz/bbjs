@@ -70,14 +70,16 @@ const startBlock = await provider.getBlockNumber()
 const block = await provider.getBlock(startBlock)
 console.log(`Block: ${startBlock}`)
 
-let checkWaiting
 let slot
 let lastSeenBlockNumber = 0
 let feeBlockNumber = lastSeenBlockNumber
 let fastFee = block.baseFeePerGas * feeMult
 let gasLimit
+let submittedLock = false
 
 async function processSubmitted() {
+  if (submittedLock) return
+  submittedLock = true
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
     console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
@@ -86,7 +88,7 @@ async function processSubmitted() {
       lastSeenBlockNumber = receipt.blockNumber
     }
   }
-  checkWaiting = false
+  submittedLock = false
 }
 
 async function processSlot() {
@@ -118,25 +120,22 @@ const now = Math.trunc(Date.now() / 1000)
 let seconds = (now - (now % 12) - 1 - GENESIS)
 slot = seconds / 12
 
+let intervalId
+
 async function everySecond() {
   console.log(`${Date.now()}: ${seconds} s`)
-  checkWaiting = true
   if (seconds % 12 === 11) slot += 1
   seconds += 1
   if (seconds % 12 === delay)
     await processSlot()
-}
-
-let intervalId = setInterval(everySecond, 1000)
-
-while (submitted.length || slotsLeft) {
-  if (checkWaiting) await processSubmitted()
-  else if (feeBlockNumber < lastSeenBlockNumber) {
+  await processSubmitted()
+  if (feeBlockNumber < lastSeenBlockNumber) {
     feeBlockNumber = lastSeenBlockNumber
     const block = await provider.getBlock(feeBlockNumber)
     fastFee = block.baseFeePerGas * feeMult
   }
-  else await new Promise(resolve => setTimeout(resolve, 250))
+  if (!(submitted.length || slotsLeft))
+    clearInterval(intervalId)
 }
 
-clearInterval(intervalId)
+intervalId = setInterval(everySecond, 1000)
