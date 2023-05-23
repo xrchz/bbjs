@@ -114,30 +114,24 @@ async function processSlot() {
   slotWaiting = false
 }
 
-let seconds = 0
+const GENESIS = 1606824023
+
+const now = Math.trunc(Date.now() / 1000)
+let seconds = (now - (now % 12) - 1 - GENESIS)
+slot = seconds / 12
 
 function everySecond() {
   console.log(`${Date.now()}: ${seconds} s`)
-  seconds += 1
-  const mod = Math.trunc(Date.now() / 1000) % 12
   checkWaiting = true
-  if (mod === 11) slot += 1
-  if ((mod + 1) % 12 === delay)
+  if (seconds % 12 === 11) slot += 1
+  seconds += 1
+  if (seconds % 12 === delay)
     slotWaiting = true
 }
 
-const GENESIS = 1606824023
-
 let intervalId
 
-const onSecondBoundary = () => {
-  const now = Math.trunc(Date.now() / 1000)
-  const mod = now % 12
-  slot = (now - mod - 1 - GENESIS) / 12
-  intervalId = setInterval(everySecond, 1000)
-}
-
-setTimeout(onSecondBoundary, Date.now() % 1000)
+intervalId = setInterval(everySecond, 1000)
 
 while (submitted.length || slotsLeft) {
   if (slotWaiting) await processSlot()
@@ -147,7 +141,7 @@ while (submitted.length || slotsLeft) {
     const block = await provider.getBlock(feeBlockNumber)
     fastFee = block.baseFeePerGas * feeMult
   }
-  else await new Promise(resolve => setTimeout(resolve, pollingInterval))
+  else await new Promise(resolve => setTimeout(resolve, 250))
 }
 
 clearInterval(intervalId)
