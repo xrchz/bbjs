@@ -71,7 +71,6 @@ const block = await provider.getBlock(startBlock)
 console.log(`Block: ${startBlock}`)
 
 let checkWaiting
-let slotWaiting
 let slot
 let lastSeenBlockNumber = 0
 let feeBlockNumber = lastSeenBlockNumber
@@ -111,7 +110,6 @@ async function processSlot() {
     submitted.push(response.wait())
   }
   slotsLeft -= 1
-  slotWaiting = false
 }
 
 const GENESIS = 1606824023
@@ -120,22 +118,19 @@ const now = Math.trunc(Date.now() / 1000)
 let seconds = (now - (now % 12) - 1 - GENESIS)
 slot = seconds / 12
 
-function everySecond() {
+async function everySecond() {
   console.log(`${Date.now()}: ${seconds} s`)
   checkWaiting = true
   if (seconds % 12 === 11) slot += 1
   seconds += 1
   if (seconds % 12 === delay)
-    slotWaiting = true
+    await processSlot()
 }
 
-let intervalId
-
-intervalId = setInterval(everySecond, 1000)
+let intervalId = setInterval(everySecond, 1000)
 
 while (submitted.length || slotsLeft) {
-  if (slotWaiting) await processSlot()
-  else if (checkWaiting) await processSubmitted()
+  if (checkWaiting) await processSubmitted()
   else if (feeBlockNumber < lastSeenBlockNumber) {
     feeBlockNumber = lastSeenBlockNumber
     const block = await provider.getBlock(feeBlockNumber)
