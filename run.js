@@ -74,6 +74,7 @@ let checkWaiting
 let slotWaiting
 let slot
 let lastSeenBlockNumber = 0
+let feeBlockNumber = lastSeenBlockNumber
 let fastFee = block.baseFeePerGas * feeMult
 let gasLimit
 
@@ -84,9 +85,6 @@ async function processSubmitted() {
     landed += 1
     if (receipt.blockNumber > lastSeenBlockNumber) {
       lastSeenBlockNumber = receipt.blockNumber
-      const block = await provider.getBlock(receipt.blockNumber)
-      const baseFee = block.baseFeePerGas
-      fastFee = baseFee * feeMult
     }
   }
   checkWaiting = false
@@ -116,7 +114,11 @@ async function processSlot() {
   slotWaiting = false
 }
 
+let seconds = 0
+
 function everySecond() {
+  console.log(`${seconds} s`)
+  seconds += 1
   const mod = Math.trunc(Date.now() / 1000) % 12
   checkWaiting = true
   if (mod === 11) slot += 1
@@ -140,6 +142,11 @@ setTimeout(onSecondBoundary, Date.now() % 1000)
 while (submitted.length || slotsLeft) {
   if (slotWaiting) await processSlot()
   else if (checkWaiting) await processSubmitted()
+  else if (feeBlockNumber < lastSeenBlockNumber) {
+    feeBlockNumber = lastSeenBlockNumber
+    const block = await provider.getBlock(feeBlockNumber)
+    fastFee = block.baseFeePerGas * feeMult
+  }
   else await new Promise(resolve => setTimeout(resolve, pollingInterval))
 }
 
