@@ -117,7 +117,7 @@ async function processSlot() {
 let seconds = 0
 
 function everySecond() {
-  console.log(`${seconds} s`)
+  console.log(`${Date.now()}: ${seconds} s`)
   seconds += 1
   const mod = Math.trunc(Date.now() / 1000) % 12
   checkWaiting = true
