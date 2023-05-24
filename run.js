@@ -3,14 +3,23 @@ import { program } from 'commander'
 import { randomBytes } from 'node:crypto'
 
 function addHeader(opt, headers) {
-  const a = opt.split(':', 2)
-  headers.set(a[0], a[1])
+  const a = opt.split(':', 3)
+  if (a.length === 2) a.unshift('*')
+  if (!headers.has(a[0]))
+    headers.set(a[0], new Map())
+  const m = headers.get(a[0])
+  m.set(a[1], a[2])
   return headers
 }
 
+function addRPC(opt, rpcs) {
+  rpcs.push(opt)
+  return rpcs
+}
+
 program
-  .option('-r, --rpc <url>', 'RPC endpoint URL', 'http://localhost:8545')
-  .option('--header <k>:<v>', 'add a header to fetch requests, may be repeated', addHeader, new Map())
+  .option('-r, --rpc <url>', 'RPC endpoint URL (default localhost:8545), may be repeated', addRPC, [])
+  .option('--header [<n>:]<k>:<v>', 'add a header to fetch requests (for nth rpc), may be repeated', addHeader, new Map())
   .option('-z, --size <kB>', 'calldata kilobytes to include per transaction', '64')
   .option('--trim-bytes <b>', 'trim a few bytes from the size', '256')
   .option('-s, --slots <n>', 'number of slots to run for', '10')
@@ -26,18 +35,25 @@ program
 program.parse()
 const options = program.opts()
 
-const fetchRequest = new ethers.FetchRequest(options.rpc)
-options.header.forEach((v, k) => fetchRequest.setHeader(k, v))
-const provider = new ethers.JsonRpcProvider(fetchRequest)
+const urls = options.rpc.length ? options.rpc : ['http://localhost:8545']
+const fetchRequests = urls.map((url) => new ethers.FetchRequest(url))
+options.header.forEach((m, r) => {
+  if (r === '*')
+    fetchRequests.forEach(fr => m.forEach((v, k) => fr.setHeader(k, v)))
+  else
+    m.forEach((v, k) => fetchRequests[r].setHeader(k, v))
+})
+const providers = fetchRequests.map(fr => new ethers.JsonRpcProvider(fr))
 const pollingInterval = parseInt(options.interval)
-provider.pollingInterval = pollingInterval
+providers.forEach(pr => { pr.pollingInterval = pollingInterval })
 console.log('Awaiting network...')
-const network = await provider.getNetwork()
-console.log(`Got ${network.name}`)
-const signer = new ethers.Wallet(options.signer, provider)
-console.log(`Signer: ${await signer.getAddress()}`)
-console.log(`Balance: ${ethers.formatEther(await provider.getBalance(signer))} ether`)
-let nonce = await signer.getNonce()
+const networks = await Promise.all(providers.map(pr => pr.getNetwork()))
+console.log(`Got ${networks.map(n => n.name)}`)
+const network = networks[0]
+const disconnectedSigner = new ethers.Wallet(options.signer)
+console.log(`Signer: ${await disconnectedSigner.getAddress()}`)
+console.log(`Balance: ${ethers.formatEther(await providers[0].getBalance(disconnectedSigner))} ether`)
+let nonce = await disconnectedSigner.connect(providers[0]).getNonce()
 console.log(`Nonce: ${nonce}`)
 
 let slotsLeft = parseInt(options.slots)
@@ -66,8 +82,8 @@ const nonces = new Map()
 const submitted = []
 let landed = 0
 
-const startBlock = await provider.getBlockNumber()
-const block = await provider.getBlock(startBlock)
+const startBlock = await providers[0].getBlockNumber()
+const block = await providers[0].getBlock(startBlock)
 console.log(`Block: ${startBlock}`)
 
 let slot
@@ -91,12 +107,16 @@ async function processSubmitted() {
   submittedLock = false
 }
 
+let currentProvider = 0
+
 async function processSlot() {
   if (!slotsLeft) return
   console.log(`Processing slot ${slot}`)
   console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
   for (const i of Array(toSubmit).keys()) {
+    const signer = disconnectedSigner.connect(providers[currentProvider])
+    currentProvider = (currentProvider + 1) % providers.length
     const tx = makeTxn(fastFee, nonce)
     if (!gasLimit) {
       tx.gasLimit = block.gasLimit
@@ -105,7 +125,7 @@ async function processSlot() {
     tx.gasLimit = gasLimit
     const popTx = await signer.populateTransaction(tx)
     const signedTx = await signer.signTransaction(popTx)
-    const response = await provider.broadcastTransaction(signedTx)
+    const response = await providers[currentProvider].broadcastTransaction(signedTx)
     console.log(`Submitted ${response.nonce} as ${shortHash(response.hash)}`)
     nonces.set(response.hash, response.nonce)
     nonce = response.nonce + 1
@@ -131,7 +151,7 @@ async function everySecond() {
   await processSubmitted()
   if (feeBlockNumber < lastSeenBlockNumber) {
     feeBlockNumber = lastSeenBlockNumber
-    const block = await provider.getBlock(feeBlockNumber)
+    const block = await providers[currentProvider].getBlock(feeBlockNumber)
     fastFee = block.baseFeePerGas * feeMult
   }
   if (!(submitted.length || slotsLeft))
