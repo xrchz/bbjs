@@ -119,8 +119,6 @@ async function processSlot() {
   const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
   for (const i of Array(toSubmit).keys()) {
     const signer = disconnectedSigners[currentSigner].connect(providers[currentProvider])
-    currentProvider = (currentProvider + 1) % providers.length
-    currentSigner = (currentSigner + 1) % disconnectedSigners.length
     const tx = makeTxn(fastFee, nonces[currentSigner])
     if (!gasLimit) {
       tx.gasLimit = block.gasLimit
@@ -134,6 +132,8 @@ async function processSlot() {
     hashToNonce.set(response.hash, response.nonce)
     nonces[currentSigner] = response.nonce + 1
     submitted.push(response.wait())
+    currentProvider = (currentProvider + 1) % providers.length
+    currentSigner = (currentSigner + 1) % disconnectedSigners.length
   }
   slotsLeft -= 1
 }
@@ -147,7 +147,7 @@ slot = seconds / 12
 let intervalId
 
 async function everySecond() {
-  console.log(`${Date.now()}: ${seconds} s`)
+  // console.log(`${Date.now()}: ${seconds} s`)
   if (seconds % 12 === 11) slot += 1
   seconds += 1
   if (seconds % 12 === delay)
