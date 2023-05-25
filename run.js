@@ -111,14 +111,18 @@ async function processSubmitted() {
 
 let currentProvider = 0
 let currentSigner = 0
+let slotLock = false
 
 async function processSlot() {
   if (!slotsLeft) return
+  while (slotLock) await new Promise(resolve => setTimeout(resolve, 750))
+  slotLock = true
   console.log(`Processing slot ${slot}`)
   console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
   for (const i of Array(toSubmit).keys()) {
-    const signer = disconnectedSigners[currentSigner].connect(providers[currentProvider])
+    const provider = providers[currentProvider]
+    const signer = disconnectedSigners[currentSigner].connect(provider)
     const tx = makeTxn(fastFee, nonces[currentSigner])
     if (!gasLimit) {
       tx.gasLimit = block.gasLimit
@@ -127,7 +131,7 @@ async function processSlot() {
     tx.gasLimit = gasLimit
     const popTx = await signer.populateTransaction(tx)
     const signedTx = await signer.signTransaction(popTx)
-    const response = await providers[currentProvider].broadcastTransaction(signedTx)
+    const response = await provider.broadcastTransaction(signedTx)
     console.log(`Submitted ${response.nonce} as ${shortHash(response.hash)}`)
     hashToNonce.set(response.hash, response.nonce)
     nonces[currentSigner] = response.nonce + 1
@@ -136,6 +140,7 @@ async function processSlot() {
     currentSigner = (currentSigner + 1) % disconnectedSigners.length
   }
   slotsLeft -= 1
+  slotLock = false
 }
 
 const GENESIS = 1606824023
