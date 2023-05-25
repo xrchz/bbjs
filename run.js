@@ -17,6 +17,8 @@ function addRPC(opt, rpcs) {
   return rpcs
 }
 
+const getSigners = s => s.split(',').map(k => k.startsWith('0x') ? k : `0x${k}`)
+
 program
   .option('-r, --rpc <url>', 'RPC endpoint URL (default localhost:8545), may be repeated', addRPC, [])
   .option('--header [<n>:]<k>:<v>', 'add a header to fetch requests (for nth rpc), may be repeated', addHeader, new Map())
@@ -31,7 +33,7 @@ program
   .option('-g, --gas-mult <n>', 'gas limit multiplier', '2')
   .option('-p, --priority-fee <gwei>', 'max priority fee per gas', '10')
   .option('-i, --interval <millis>', 'polling interval', '500')
-  .requiredOption('-k, --signer <key>', 'private key of account to send transactions from')
+  .requiredOption('-k, --signers <key(s)>', 'private key(s) of account to send transactions from, comma separated', getSigners)
 program.parse()
 const options = program.opts()
 
@@ -50,11 +52,11 @@ console.log('Awaiting network...')
 const networks = await Promise.all(providers.map(pr => pr.getNetwork()))
 console.log(`Got ${networks.map(n => n.name)}`)
 const network = networks[0]
-const disconnectedSigner = new ethers.Wallet(options.signer)
-console.log(`Signer: ${await disconnectedSigner.getAddress()}`)
-console.log(`Balance: ${ethers.formatEther(await providers[0].getBalance(disconnectedSigner))} ether`)
-let nonce = await disconnectedSigner.connect(providers[0]).getNonce()
-console.log(`Nonce: ${nonce}`)
+const disconnectedSigners = options.signers.map(k => new ethers.Wallet(k))
+console.log(`Signers: ${await Promise.all(disconnectedSigners.map(s => s.getAddress()))}`)
+console.log(`Balance: ${await Promise.all(disconnectedSigners.map(s => providers[0].getBalance(s).then(b => ethers.formatEther(b))))}`)
+let nonces = await Promise.all(disconnectedSigners.map(s => s.connect(providers[0]).getNonce()))
+console.log(`Nonce: ${nonces}`)
 
 let slotsLeft = parseInt(options.slots)
 const total = parseInt(options.txns) * slotsLeft
@@ -77,7 +79,7 @@ function makeTxn(maxFee, nonce) {
 }
 
 const shortHash = (hash) => `${hash.substring(0, 4)}..${hash.substring(hash.length - 4)}`
-const nonces = new Map()
+const hashToNonce = new Map()
 
 const submitted = []
 let landed = 0
@@ -98,7 +100,7 @@ async function processSubmitted() {
   submittedLock = true
   while (submitted.length && Promise.race([submitted[0], false])) {
     const receipt = await submitted.shift()
-    console.log(`${nonces.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
+    console.log(`${hashToNonce.get(receipt.hash)} (${shortHash(receipt.hash)}) included in ${receipt.blockNumber}`)
     landed += 1
     if (receipt.blockNumber > lastSeenBlockNumber) {
       lastSeenBlockNumber = receipt.blockNumber
@@ -108,6 +110,7 @@ async function processSubmitted() {
 }
 
 let currentProvider = 0
+let currentSigner = 0
 
 async function processSlot() {
   if (!slotsLeft) return
@@ -115,9 +118,10 @@ async function processSlot() {
   console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
   for (const i of Array(toSubmit).keys()) {
-    const signer = disconnectedSigner.connect(providers[currentProvider])
+    const signer = disconnectedSigners[currentSigner].connect(providers[currentProvider])
     currentProvider = (currentProvider + 1) % providers.length
-    const tx = makeTxn(fastFee, nonce)
+    currentSigner = (currentSigner + 1) % disconnectedSigners.length
+    const tx = makeTxn(fastFee, nonces[currentSigner])
     if (!gasLimit) {
       tx.gasLimit = block.gasLimit
       gasLimit = gasMult * await signer.estimateGas(tx)
@@ -127,8 +131,8 @@ async function processSlot() {
     const signedTx = await signer.signTransaction(popTx)
     const response = await providers[currentProvider].broadcastTransaction(signedTx)
     console.log(`Submitted ${response.nonce} as ${shortHash(response.hash)}`)
-    nonces.set(response.hash, response.nonce)
-    nonce = response.nonce + 1
+    hashToNonce.set(response.hash, response.nonce)
+    nonces[currentSigner] = response.nonce + 1
     submitted.push(response.wait())
   }
   slotsLeft -= 1
