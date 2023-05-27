@@ -58,21 +58,28 @@ console.log(`Balance: ${await Promise.all(disconnectedSigners.map(s => providers
 let nonces = await Promise.all(disconnectedSigners.map(s => s.connect(providers[0]).getNonce()))
 console.log(`Nonce: ${nonces}`)
 
-let slotsLeft = parseInt(options.slots)
-const total = parseInt(options.txns) * slotsLeft
+function estimateGas(bytes) {
+  return 21000 + 16 * bytes + 10000
+}
+
+const totalSlots = parseInt(options.slots)
+const txPerSlot = parseInt(options.txns)
+const total = txPerSlot * totalSlots
 const delay = parseInt(options.delay)
 const maxTxns = parseInt(options.maxTxns)
 const sizeBytes = parseInt(options.size) * 1024 - parseInt(options.trimBytes)
 const feeMult = BigInt(options.feeMult)
 const gasMult = BigInt(options.gasMult)
 const prioFee = ethers.parseUnits(options.priorityFee, 'gwei')
+const gasLimit = estimateGas(sizeBytes)
 
 function makeTxn(maxFee, nonce) {
   const tx = new ethers.Transaction()
   tx.chainId = network.chainId
-  tx.maxFeePerGas = maxFee
+  tx.maxFeePerGas = maxFee > prioFee ? maxFee : prioFee
   tx.maxPriorityFeePerGas = prioFee
   tx.nonce = nonce
+  tx.gasLimit = gasLimit
   tx.to = options.contract
   tx.data = `0x${randomBytes(sizeBytes).toString('hex')}`
   return tx
@@ -92,7 +99,6 @@ let slot
 let lastSeenBlockNumber = 0
 let feeBlockNumber = lastSeenBlockNumber
 let fastFee = block.baseFeePerGas * feeMult
-let gasLimit
 let submittedLock = false
 
 async function processSubmitted() {
@@ -113,33 +119,48 @@ let currentProvider = 0
 let currentSigner = 0
 let slotLock = false
 
+const signedTransactions = []
+
+async function makeTransactions() {
+  for (const i of Array(total).keys()) {
+    const provider = providers[currentProvider]
+    const signer = disconnectedSigners[currentSigner].connect(provider)
+    const tx = makeTxn(fastFee, nonces[currentSigner])
+    const popTx = await signer.populateTransaction(tx)
+    const signedTx = await signer.signTransaction(popTx)
+    signedTransactions.push(signedTx)
+    nonces[currentSigner] += 1
+    currentProvider = (currentProvider + 1) % providers.length
+    currentSigner = (currentSigner + 1) % disconnectedSigners.length
+  }
+}
+
+await makeTransactions()
+console.log(`Signed ${signedTransactions.length} transactions`)
+
 async function processSlot() {
-  if (!slotsLeft) return
   while (slotLock) await new Promise(resolve => setTimeout(resolve, 750))
   slotLock = true
   console.log(`Processing slot ${slot}`)
   console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
-  const toSubmit = Math.min(maxTxns, Math.trunc((total - landed) / slotsLeft))
+  const waitingTransactions = submitted.length
+  if (waitingTransactions + landed >= total) return
+  const toSubmit = Math.min(signedTransactions.length,
+	  waitingTransactions + txPerSlot >= maxTxns ? maxTxns - waitingTransactions : txPerSlot)
+  console.log(`Total: ${total}, landed: ${landed}, toSubmit: ${toSubmit}, submitted but not landed: ${submitted.length}`)
+  const submittedAwaiting = []
   for (const i of Array(toSubmit).keys()) {
+    const signedTx = signedTransactions.shift()
     const provider = providers[currentProvider]
-    const signer = disconnectedSigners[currentSigner].connect(provider)
-    const tx = makeTxn(fastFee, nonces[currentSigner])
-    if (!gasLimit) {
-      tx.gasLimit = block.gasLimit
-      gasLimit = gasMult * await signer.estimateGas(tx)
-    }
-    tx.gasLimit = gasLimit
-    const popTx = await signer.populateTransaction(tx)
-    const signedTx = await signer.signTransaction(popTx)
-    const response = await provider.broadcastTransaction(signedTx)
+    const responseAwaiting = provider.broadcastTransaction(signedTx)
+    submittedAwaiting.push(responseAwaiting)
+    currentProvider = (currentProvider + 1) % providers.length
+  }
+  await Promise.all(submittedAwaiting).then(responses => responses.forEach(response => {
     console.log(`Submitted ${response.nonce} as ${shortHash(response.hash)}`)
     hashToNonce.set(response.hash, response.nonce)
-    nonces[currentSigner] = response.nonce + 1
     submitted.push(response.wait())
-    currentProvider = (currentProvider + 1) % providers.length
-    currentSigner = (currentSigner + 1) % disconnectedSigners.length
-  }
-  slotsLeft -= 1
+  }))
   slotLock = false
 }
 
@@ -155,15 +176,18 @@ async function everySecond() {
   // console.log(`${Date.now()}: ${seconds} s`)
   if (seconds % 12 === 11) slot += 1
   seconds += 1
-  if (seconds % 12 === delay)
+  //console.log(`Interval processing called at ${seconds}`)
+  if (seconds % 12 === delay) {
+    console.log(`Target delay hit at ${seconds}`)
     await processSlot()
+  }
   await processSubmitted()
   if (feeBlockNumber < lastSeenBlockNumber) {
     feeBlockNumber = lastSeenBlockNumber
     const block = await providers[currentProvider].getBlock(feeBlockNumber)
-    fastFee = block.baseFeePerGas * feeMult
+    if (block) fastFee = block.baseFeePerGas * feeMult
   }
-  if (!(submitted.length || slotsLeft))
+  if (!submitted.length && landed >= total)
     clearInterval(intervalId)
 }
 
