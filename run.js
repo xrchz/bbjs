@@ -118,6 +118,7 @@ async function processSubmitted() {
 let currentProvider = 0
 let currentSigner = 0
 let slotLock = false
+let totalWantedTransactions = 0
 
 const signedTransactions = []
 
@@ -141,13 +142,15 @@ console.log(`Signed ${signedTransactions.length} transactions`)
 async function processSlot() {
   while (slotLock) await new Promise(resolve => setTimeout(resolve, 750))
   slotLock = true
+  totalWantedTransactions += txPerSlot
   console.log(`Processing slot ${slot}`)
   console.log(`Fast fee: ${ethers.formatUnits(fastFee, 'gwei')} gwei`)
   const waitingTransactions = submitted.length
   if (waitingTransactions + landed >= total) return
+  let currentWantedTransactions = totalWantedTransactions - (landed + waitingTransactions)
   const toSubmit = Math.min(signedTransactions.length,
-	  waitingTransactions + txPerSlot >= maxTxns ? maxTxns - waitingTransactions : txPerSlot)
-  console.log(`Total: ${total}, landed: ${landed}, toSubmit: ${toSubmit}, submitted but not landed: ${submitted.length}`)
+	  waitingTransactions + currentWantedTransactions >= maxTxns ? maxTxns - waitingTransactions : currentWantedTransactions)
+  console.log(`Total: ${total}, landed: ${landed}, toSubmit: ${toSubmit}, submitted but not landed: ${waitingTransactions}`)
   const submittedAwaiting = []
   for (const i of Array(toSubmit).keys()) {
     const signedTx = signedTransactions.shift()
@@ -164,18 +167,20 @@ async function processSlot() {
   slotLock = false
 }
 
-const GENESIS = 1606824023
+//const GENESIS = 1606824023
+const GENESIS = 1616508000 // Goerli
 
 const now = Math.trunc(Date.now() / 1000)
-let seconds = (now - (now % 12) - 1 - GENESIS)
-slot = seconds / 12
+let seconds = (now - GENESIS)
+slot = Math.trunc(seconds / 12)
 
 let intervalId
 
 async function everySecond() {
-  // console.log(`${Date.now()}: ${seconds} s`)
+  const now = Math.trunc(Date.now() / 1000)
+  let seconds = (now - GENESIS)
+  //console.log(`${Date.now()}: ${seconds} s`)
   if (seconds % 12 === 11) slot += 1
-  seconds += 1
   //console.log(`Interval processing called at ${seconds}`)
   if (seconds % 12 === delay) {
     console.log(`Target delay hit at ${seconds}`)
